@@ -1,4 +1,4 @@
- 
+
 """
 
 Cell-Scale ODE Environment
@@ -9,7 +9,11 @@ Cell-Scale ODE Environment
 
 from . import modelbuilder
 from . import solver
-from . import paropt
 
-__all__ = ["modelbuilder", "solver", "paropt"]
+# paropt requires pycvodes which needs SUNDIALS - make it optional
+try:
+    from . import paropt
+    __all__ = ["modelbuilder", "solver", "paropt"]
+except ImportError:
+    __all__ = ["modelbuilder", "solver"]
 
