@@ -2,21 +2,17 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import './App.css';
 
-// Get API URL from environment variable or default to localhost
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8080';
 
 function App() {
   const [simulations, setSimulations] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-
-  // Form state
   const [simulationTime, setSimulationTime] = useState(125.0);
   const [restartInterval, setRestartInterval] = useState(1.0);
   const [simulationType, setSimulationType] = useState('cme-ode');
   const [randomSeed, setRandomSeed] = useState('');
 
-  // Fetch simulations list
   const fetchSimulations = async () => {
     try {
       const response = await axios.get(`${API_URL}/simulations`);
@@ -28,14 +24,12 @@ function App() {
     }
   };
 
-  // Load simulations on mount and refresh every 5 seconds
   useEffect(() => {
     fetchSimulations();
     const interval = setInterval(fetchSimulations, 5000);
     return () => clearInterval(interval);
   }, []);
 
-  // Start a new simulation
   const startSimulation = async (e) => {
     e.preventDefault();
     setLoading(true);
@@ -64,7 +58,6 @@ function App() {
     }
   };
 
-  // Delete a simulation
   const deleteSimulation = async (simulationId) => {
     if (!window.confirm('Are you sure you want to delete this simulation?')) {
       return;
@@ -79,7 +72,6 @@ function App() {
     }
   };
 
-  // Get status color
   const getStatusColor = (status) => {
     switch (status) {
       case 'completed':
@@ -103,7 +95,6 @@ function App() {
       </header>
 
       <div className="container">
-        {/* Simulation Form */}
         <div className="card">
           <h2>Start New Simulation</h2>
           {error && <div className="error-message">{error}</div>}
@@ -117,8 +108,8 @@ function App() {
                 onChange={(e) => setSimulationType(e.target.value)}
                 disabled={loading}
               >
-                <option value="cme-ode">CME-ODE (Well-stirred)</option>
-                <option value="rdme">RDME (Spatial - Not yet implemented)</option>
+                <option value="cme-ode">CME-ODE</option>
+                <option value="rdme">RDME</option>
               </select>
             </div>
 
@@ -192,7 +183,6 @@ function App() {
           </form>
         </div>
 
-        {/* Simulations List */}
         <div className="card">
           <h2>Simulations ({simulations.length})</h2>
 

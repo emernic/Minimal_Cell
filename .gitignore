@@ -1,8 +1,10 @@
-# Python
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
+*.pyc
+*.pyo
+*.pyd
 .Python
 build/
 develop-eggs/
@@ -24,62 +26,17 @@ MANIFEST
 *.spec
 pip-log.txt
 pip-delete-this-directory.txt
-
-# Virtual environments
 venv/
 ENV/
 env/
 .venv
-
-# Jupyter Notebook
 .ipynb_checkpoints
 *.ipynb
-
-# IDEs
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-.DS_Store
-Thumbs.db
-
-# Node.js
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnp
-.pnp.js
-package-lock.json
-yarn.lock
-
-# React build
-frontend/build/
-frontend/.env
-frontend/.env.local
-frontend/.env.development.local
-frontend/.env.test.local
-frontend/.env.production.local
-
-# Testing
-coverage/
-.nyc_output
-*.lcov
-
-# Production
-/build
-/dist
-
-# Logs
-logs/
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-lerna-debug.log*
-
-# OS
 .DS_Store
 .DS_Store?
 ._*
@@ -87,30 +44,36 @@ lerna-debug.log*
 .Trashes
 ehthumbs.db
 Thumbs.db
-
-# Simulation outputs
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.pnp
+.pnp.js
+package-lock.json
+yarn.lock
+frontend/build/
+frontend/.env
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+coverage/
+.nyc_output
+*.lcov
+/build
+/dist
+logs/
+*.log
 simulations/
 outputs/
 *.lm
 *.hdf5
-
-# Large data files (keep model_data but ignore generated results)
 CME_ODE/simulations/
 RDME_gCME_ODE/simulations/
-
-# Compiled files
-*.pyc
-*.pyo
-*.pyd
-.Python
-
-# Docker
 .dockerignore
-
-# Environment variables
 .env
 .env.local
 .env.*.local
-
-# Railway
 .railway/
