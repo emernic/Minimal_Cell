@@ -1,391 +1,199 @@
 # Minimal_Cell
 
-This directory contains the simulation files for the well-stirred and spatial models of the Minimal Cell JCVI-syn3A by Thornburg et al., 2021. Also included is the directory to install the package odecell which is used in the simulations to write the ODE equations for the metabolism.
+Hybrid CME-ODE whole-cell model of JCVI-syn3A (473 genes, ~3.8 Mbp genome). Simulates gene expression stochastically (CME) and metabolism deterministically (ODE), coupled every second.
 
-**CME_ODE**: Contains program for well-stirred model of JCVI-syn3A capable of simulating a whole cell cycle. The modified FBAm is included in model_data/FBA/
-
-**RDME_CME_ODE**: Contains program for spatially resolved model of the first 20 minutes of the cell cycle for JCVI-syn3A
-
-**odecell**: Package required for metabolic reactions. Writes the reaction rates into a system of ODEs that can be given to a solver
-
----
+**CME_ODE**: Well-stirred model, full cell cycle (~100-125 min)
+**RDME_CME_ODE**: Spatial model, first 20 min only, requires GPU
+**odecell**: Package for building ODE metabolic models
 
 ## Table of Contents
-- [What Cell is Being Modeled](#what-cell-is-being-modeled)
-- [Overall Architecture](#overall-architecture)
-- [Key Flow of Control](#key-flow-of-control)
-- [Major Components & Their Roles](#major-components--their-roles)
-- [Biological Systems Represented](#biological-systems-represented)
-- [How Parameters Are Represented](#how-parameters-are-represented)
-- [Most Explanatory Code Snippets](#most-explanatory-code-snippets)
-- [Scale of the Model](#scale-of-the-model)
-- [Key Data Files](#key-data-files)
-- [Technologies Used](#technologies-used)
-- [Simulation Output](#simulation-output)
+- [Model Organism](#model-organism)
+- [Architecture](#architecture)
+- [Execution Flow](#execution-flow)
+- [File Roles](#file-roles)
+- [Biological Systems](#biological-systems)
+- [Parameters](#parameters)
+- [Key Code Patterns](#key-code-patterns)
+- [Data Files](#data-files)
+- [Output](#output)
 
 ---
 
-## What Cell is Being Modeled
+## Model Organism
 
-**JCVI-Syn3A** - a synthetic minimal cell created at the J. Craig Venter Institute
-- Derived from *Mycoplasma mycoides*
-- **473 genes** (smallest known genome that can sustain life)
-- ~3.8 Mbp genome
-- Full cell cycle takes ~100-125 minutes
-- Genome references:
-  - `syn3A.gb`: NCBI GenBank file `CP016816.2`
-  - `syn2.gb`: NCBI GenBank file `CP014992.1` (intermediate strain)
+**JCVI-Syn3A**: Synthetic minimal *Mycoplasma mycoides*
+- 473 genes, ~3.8 Mbp genome
+- Cell cycle: 100-125 minutes
+- GenBank: `syn3A.gb` (CP016816.2), `syn2.gb` (CP014992.1)
 
----
+## Architecture
 
-## Overall Architecture
+**Hybrid CME-ODE**:
+- CME: Stochastic gene expression (mRNA, proteins) via Gillespie algorithm
+- ODE: Deterministic metabolism (metabolites) via CVODES/SciPy
+- Communication: Every 1 second, CME particle counts → ODE concentrations → CME updates
 
-The model uses a **hybrid CME-ODE framework**:
-- **CME (Chemical Master Equation)**: Stochastic simulation for gene expression (low copy numbers like mRNA, proteins)
-- **ODE (Ordinary Differential Equations)**: Deterministic simulation for metabolism (high copy numbers like metabolites)
-
-These two methods communicate every second to exchange molecular counts, creating a seamless integration of stochastic gene expression with deterministic biochemical networks.
-
-### Directory Structure
+**Directory Structure**:
 ```
-Minimal_Cell/
-├── CME_ODE/                           [WELL-STIRRED MODEL]
-│   ├── program/                       [24 Python simulation files]
-│   ├── model_data/                    [Biological parameters, genome, proteomics]
-│   └── simulations/                   [Output results]
-├── RDME_gCME_ODE/                     [SPATIAL MODEL]
-│   ├── program/                       [Spatial simulation code]
-│   ├── model_data/                    [Same biological data]
-│   └── simulations/                   [Output results]
-└── odecell/                           [ODE metabolic model builder package]
-    └── ENVODE/                        [Python environment]
+CME_ODE/program/         # 24 Python files
+CME_ODE/model_data/      # Genome, proteomics, kinetic parameters
+CME_ODE/simulations/     # Output (.lm, .csv, fluxes)
+odecell/                 # ODE model builder
 ```
 
----
+## Execution Flow
 
-## Key Flow of Control
+**1. Initial Setup** (`MinCell_CMEODE.py`, minute 0):
+- Load genome (`syn3A.gb`, `syn2.gb`)
+- Load proteomics (`proteomics.xlsx`) → initial protein counts
+- Build CME reactions (transcription, translation, degradation, replication)
+- Initialize metabolites from `.tsv` files
+- Save to `.lm` file (HDF5)
 
-The simulation operates in three phases:
-
-### 1. Initial Setup (`MinCell_CMEODE.py` - first minute)
-```
-Load genome → Load proteomics → Build CME reactions → Initialize metabolites → Save state
-```
-
-- Loads genome data from GenBank files (syn2.gb, syn3A.gb)
-- Loads proteomics data to determine initial protein counts
-- Creates CME simulation object with all genetic information processing (GIP) reactions
-- Sets up transcription, translation, degradation, and DNA replication reactions
-- Initializes metabolite concentrations from .tsv model files
-- Saves initial state to .lm file (HDF5 format)
-
-### 2. Main Restart Loop (`MinCell_restart.py` - runs in 1-min intervals)
+**2. Main Loop** (`MinCell_restart.py`, minutes 1→T):
 ```python
-for each minute (1 to T):
-    Load previous state (.lm file)
-    for each second (60 times):
-        CME solver runs (gene expression events)
-        ↓
-        MyOwnSolver.hookSimulation() bridges the systems
-        ↓
-        ODE solver runs (metabolism for 60 seconds)
-        ↓
-        Update CME particle counts
-    Save results (.lm, .csv, fluxes)
+for minute in range(1, T):
+    load .lm file
+    for second in range(60):
+        CME solver (Gillespie)
+        MyOwnSolver.hookSimulation()  # CME ↔ ODE bridge
+        ODE solver (60 sec integration)
+        update CME counts
+    save .lm, .csv, fluxes
 ```
 
-### 3. The Critical Bridge (`hook.py` - `MyOwnSolver` class)
-
-The **`MyOwnSolver`** class extends Lattice Microbes' GillespieDSolver and implements the hybrid integration:
-
+**3. CME-ODE Bridge** (`hook.py`):
 ```python
+# MyOwnSolver.hookSimulation() - called every 1 second
 def hookSimulation(self, time):
-    # Called every 1 second during simulation
-
-    # 1. Get current stochastic molecule counts from CME
-    self.species.update(self)
-
-    # 2. Build deterministic ODE model with current enzyme levels
-    model = Simp.initModel(self.species, ...)
-
-    # 3. Run ODE integration for 60 seconds
-    res = integrate.runODE(model, ...)
-
-    # 4. Write metabolic fluxes and update CME particle counts
-    in_out.writeResults(...)
-
-    return 1  # Tell Lattice Microbes to accept the changes
+    self.species.update(self)             # CME → particle counts
+    model = Simp.initModel(self.species)  # Build ODE system
+    res = integrate.runODE(model, 60)     # Integrate 60 sec
+    in_out.writeResults(res)              # ODE → CME counts
+    return 1
 ```
 
-### Parallel Execution
-- **`mpi_wrapper.py`** enables MPI parallelization for running multiple cell replicates
-- Each process gets a unique rank (process ID) for independent random number seeding
+**Parallelization**: `mpi_wrapper.py` runs multiple replicates via MPI
 
----
+## File Roles
 
-## Major Components & Their Roles
+| File | Purpose |
+|------|---------|
+| `MinCell_CMEODE.py` | Initial simulation setup, builds CME reaction network |
+| `MinCell_restart.py` | Restart loop controller (minutes 1→T) |
+| `hook.py` / `hook_restart.py` | CME ↔ ODE bridge (`MyOwnSolver.hookSimulation()`) |
+| `Simp.py` | Builds ODE model from current CME state |
+| `integrate.py` | ODE integrator (CVODES/SciPy wrapper) |
+| `defMetRxns.py` | Defines ~800 metabolic reactions (~3000 lines) |
+| `Rxns.py` | Metabolic rate law functions (Michaelis-Menten) |
+| `rep_start.py` / `rep_restart.py` | DNA replication, DnaA filament dynamics |
+| `species_counts.py` | Maps species between CME (counts) ↔ ODE (mM) |
+| `in_out.py` | I/O, cell growth calculation (lipid + protein → surface area) |
+| `setICs.py` / `setICs_two.py` | Load metabolite initial conditions |
+| `translation_rate_start.py` | Calculate translation rates (tRNA-dependent) |
+| `PPP_patch.py` | Pentose Phosphate Pathway parameter updates |
+| `lipid_patch.py` | Lipid metabolism parameter updates |
+| `mpi_wrapper.py` | MPI parallelization wrapper |
 
-| Component | Purpose | Lines of Code |
-|-----------|---------|---------------|
-| `MinCell_CMEODE.py` | Initial simulation setup, CME network builder | ~800 |
-| `MinCell_restart.py` | Restart loop controller | ~400 |
-| `hook.py` / `hook_restart.py` | **THE HEART**: Bridges CME ↔ ODE | ~250 |
-| `Simp.py` | Builds ODE metabolic model from current state | ~600 |
-| `integrate.py` | ODE solver (uses CVODES or SciPy) | ~300 |
-| `defMetRxns.py` | Defines ~800+ metabolic reactions | **~3000** |
-| `Rxns.py` | Metabolic rate equations (Michaelis-Menten kinetics) | ~500 |
-| `rep_start.py` / `rep_restart.py` | DNA replication & DnaA filament dynamics | ~200 |
-| `species_counts.py` | CME-ODE species mapping and conversion | ~400 |
-| `in_out.py` | I/O handling and cell growth calculations | ~200 |
-| `setICs.py` / `setICs_two.py` | Load metabolite initial conditions | ~300 |
-| `translation_rate_start.py` | Calculate translation rate constants | ~200 |
-| `PPP_patch.py` | Update Pentose Phosphate Pathway | ~100 |
-| `lipid_patch.py` | Update lipid metabolism parameters | ~100 |
-| `mpi_wrapper.py` | MPI job launcher for parallel execution | ~100 |
+**Call chain**: `hookSimulation()` → `species_counts.update()` → `Simp.initModel()` → `integrate.runODE()` → `in_out.writeResults()`
 
-### Key Module Interactions
+## Biological Systems
 
-1. **CME-ODE Communication**: `MyOwnSolver.hookSimulation()` → `species_counts.update()` → `Simp.initModel()` → `integrate.runODE()`
+**Gene Expression** (CME):
+- Transcription: 473 genes, rate depends on RNA pol availability, promoter strength
+- Translation: Michaelis-Menten, 20 amino acids + fMet, tRNA charging, SecY translocation
+- Degradation: mRNA t₁/₂ ~2 min, protein t₁/₂ ~25 hr
 
-2. **Reaction Definition Chain**: `Rxns.py` and `defMetRxns.py` define rate equations → `Simp.py` builds the ODE model → `integrate.py` compiles with Cython or uses SciPy
+**Metabolism** (ODE, ~500 reactions):
+- Glycolysis, Pentose Phosphate Pathway, TCA cycle
+- Nucleotide biosynthesis (NTPs, dNTPs)
+- Amino acid metabolism (mainly alanine)
+- Lipid biosynthesis (fatty acids, phospholipids)
 
-3. **Data Flow**: `CME particle counts` ↔ `species_counts.SpeciesCounts` ↔ `mM concentrations` ↔ `ODE solver`
+**DNA Replication** (CME):
+- DnaA-dependent initiation, cooperative binding
+- High-affinity (oligomerization) and low-affinity (ssDNA unwinding, 30 sites)
+- Multi-fork replication (up to 3 forks)
 
----
+**Transport**: Glucose (PTS), amino acids, ions (K⁺, Mg²⁺, Ca²⁺, spermine)
 
-## Biological Systems Represented
+**Cell Growth**: Surface area = lipid headgroups + membrane proteins (28 nm²/protein), volume scales with SA
 
-### 1. Gene Expression (Stochastic CME)
+## Parameters
 
-**Transcription** - All 473 genes with individual promoter strengths
+**Global** (`GlobalParameters_Zane-TB-DB.csv`):
+- Glucose: 40 mM, amino acids: 0.1 mM each
+- Cell radius: 200 nm (grows dynamically)
+- Ion concentrations (K⁺, Mg²⁺, Ca²⁺, spermine)
+
+**Gene Expression** (`MinCell_CMEODE.py`):
 ```python
-# From MinCell_CMEODE.py (lines 264-307)
-def TranscriptRate(rnaMetID, ptnMetID, rnasequence, jcvi2ID):
-    k_transcription = kcat_mod / ((1+rnaPolK0/RnaPconc)*(rnaPolKd**2)/(CMono1*CMono2) + NMonoSum + n_tot - 1)
-```
-- Kcat modulated by RNA polymerase availability (from proteomics data)
-- Kinetic parameters based on first 2 nucleotides and total sequence length
-- Separate calculations for protein-coding, rRNA, and tRNA genes
-
-**Translation** - Ribosome binding model with Michaelis-Menten kinetics
-- All 20 canonical amino acids + formyl-methionine
-- tRNA charging reactions for all 20 amino acids
-- Membrane protein translocation via SecY pathway
-- Codon usage based on actual gene sequences
-
-**Degradation**
-- mRNA degradation: sequence-length dependent rates (~2 minute half-life)
-- Protein degradation: exponential decay (~25 hour half-life)
-
-### 2. Central Metabolism (Deterministic ODE)
-
-~500+ metabolic reactions including:
-- **Glycolysis** (10 reactions)
-- **Pentose Phosphate Pathway** (15+ reactions)
-- **Citric Acid Cycle** (8 reactions)
-- **Nucleotide biosynthesis** (ATP, GTP, CTP, UTP, dNTPs)
-- **Amino acid metabolism** (primarily alanine synthesis)
-
-### 3. Lipid Metabolism
-
-- Fatty acid synthesis
-- Phospholipid biosynthesis (cardiolipin, phosphatidylcholine, etc.)
-- Cell membrane growth coupled to lipid biosynthesis
-- Drives **cell growth** through membrane surface area accumulation
-
-### 4. DNA Replication
-
-From `rep_start.py` (lines 15-72):
-- **DnaA-dependent initiation** with cooperative binding
-- High-affinity binding sites for DnaA oligomerization
-- Low-affinity ssDNA unwinding sites (30 sites simulated)
-- DnaA-ATP dependent initiation
-- Multi-fork replication (up to 3 simultaneous replication forks)
-- Multiple replication initiation events per cell cycle
-
-### 5. Transport Reactions
-
-- Glucose uptake (PTS system)
-- Amino acid transporters
-- Ion homeostasis (K+, Mg2+, Ca2+)
-- Spermine transport
-
----
-
-## How Parameters Are Represented
-
-### Global Parameters (`GlobalParameters_Zane-TB-DB.csv`)
-```
-External metabolite concentrations:
-  - Glucose: 40 mM
-  - Amino acids: 0.1 mM each
-Cell radius: 200 nm (default, grows dynamically)
-Ion transporter concentrations (K+, Mg2+, Ca2+, Spermine)
+rnaPolKcat = 0.155*187/493*20  # ~1.2 nt/s
+riboKcat = 10                  # 10 aa/s
+ptnDegRate = 7.70e-06          # protein t₁/₂ ~25 hr
+rnaDegRate = 0.00578/2         # mRNA t₁/₂ ~2 min
 ```
 
-### Gene Expression Parameters (in `MinCell_CMEODE.py`)
+**Metabolic** (`.tsv` files):
+- `Central_AA_Zane_Balanced_direction_fixed_nounqATP.tsv`: ~500 reactions, kcats, Kms
+- `Nucleotide_Kinetic_Parameters.tsv`: NTP/dNTP pathways
+- `lipid_NoH2O_balanced_model.tsv`: Lipid biosynthesis
+
+**Initial Conditions** (`.csv`, `.xlsx`):
+- `proteomics.xlsx`: ~480 proteins, mass spec abundances
+- `mRNA_counts.csv`: Steady-state mRNA copies
+- `protein_metabolites_frac.csv`, `membrane_protein_metabolites.csv`, `ribo_protein_metabolites.csv`, `trna_metabolites_synthase.csv`, `rrna_metabolites_*.csv`
+
+## Key Code Patterns
+
+**Transcription rate** (`MinCell_CMEODE.py:264-307`):
 ```python
-rnaPolKcat = 0.155*187/493*20  # RNA polymerase: ~1.2 nt/s
-rnaPolK0 = 1e-4                # mM (binding affinity)
-rnaPolKd = 0.1                 # mM (Michaelis constant)
-riboKcat = 10                  # Ribosome: 10 aa/s
-ptnDegRate = 7.70e-06          # Protein half-life: ~25 hours
-rnaDegRate = 0.00578/2         # mRNA half-life: ~2 minutes
+k_transcription = kcat_mod / ((1+rnaPolK0/RnaPconc)*(rnaPolKd**2)/(CMono1*CMono2) + NMonoSum + n_tot - 1)
 ```
+Modulated by RNA pol availability, depends on first 2 nucleotides + sequence length.
 
-### Metabolic Parameters (.tsv model files)
-
-- **`Central_AA_Zane_Balanced_direction_fixed_nounqATP.tsv`** (490 KB)
-  - ~500+ central carbon metabolism reactions with kinetic parameters
-  - Forward/reverse kcats for each enzyme
-  - Michaelis constants (Km) for all substrates/products
-
-- **`Nucleotide_Kinetic_Parameters.tsv`** (488 KB)
-  - NTP/dNTP synthesis pathway parameters
-
-- **`lipid_NoH2O_balanced_model.tsv`** (39 KB)
-  - Lipid biosynthesis reactions for cell growth
-
-### Initial Conditions (from .csv and .xlsx files)
-
-```
-protein_metabolites_frac.csv        [16 entries] - Selected proteins & fractions
-membrane_protein_metabolites.csv    [~40 entries] - Membrane proteins
-ribo_protein_metabolites.csv        [~10 entries] - Ribosomal proteins
-trna_metabolites_synthase.csv       [20 entries] - tRNA synthases
-rrna_metabolites_1.csv & 2.csv      [rRNA genes] - Ribosomal RNA
-mRNA_counts.csv                     [480+ genes] - mRNA steady-state counts
-```
-
-### Proteomics Data (`proteomics.xlsx`)
-- ~480+ proteins with quantified abundance (from mass spectrometry)
-- Used to set initial protein counts and transcription rate modulation
-- Maps MMSYN1, JCVISYN3A, and AOE protein identifiers
-
----
-
-## Most Explanatory Code Snippets
-
-### 1. Cell Growth Calculation
-From `in_out.py:34-80`:
+**Translation rate** (`translation_rate_start.py`):
 ```python
-# Cell surface area = lipid headgroups + membrane protein area
-SA_lipid = sum(lipid_concentrations * headgroup_areas)
-SA_protein = num_membrane_proteins * 28  # nm² per protein
-total_SA = SA_lipid + SA_protein
-# Volume scales with surface area accumulation
+# Michaelis-Menten based on charged tRNA availability for all 20 amino acids
+# Counts each AA in protein sequence, calculates k_translation
 ```
 
-### 2. The Hybrid Integration Hook
-From `hook.py:107-237` - **THE CRITICAL BRIDGE**:
+**Cell growth** (`in_out.py:34-80`):
 ```python
-def hookSimulation(self, time):
-    # Called every 1 second during simulation
-
-    # 1. Get current stochastic molecule counts from CME
-    self.species.update(self)
-
-    # 2. Build deterministic ODE model with current enzyme levels
-    model = Simp.initModel(self.species, ...)
-
-    # 3. Run ODE integration for 60 seconds
-    res = integrate.runODE(model, ...)
-
-    # 4. Write metabolic fluxes and update CME particle counts
-    in_out.writeResults(...)
-
-    return 1  # Tell Lattice Microbes to accept the changes
+SA = sum(lipid_conc * headgroup_area) + n_membrane_proteins * 28  # nm²
+# Volume scales with SA
 ```
 
-### 3. Translation Rate with Amino Acid Availability
-From `translation_rate_start.py`:
-```python
-def TranslatRate(rnaMetID, ptnMetID, rnasequence, aasequence):
-    # Counts each amino acid in protein sequence
-    # Calculates rate based on charged tRNA availability
-    # Uses Michaelis-Menten kinetics for all 20 amino acids
-    # Returns k_translation for this specific protein
-```
+**DNA replication** (`rep_start.py:15-72`):
+- DnaA oligomerization (high-affinity sites)
+- ssDNA unwinding (30 low-affinity sites)
+- DnaA-ATP dependent, cooperative
 
-### 4. DNA Replication Initiation
-From `rep_start.py`:
-```python
-# DnaA oligomerization on high-affinity sites
-# ssDNA unwinding at 30 low-affinity sites
-# DnaA-ATP dependent with cooperativity
-# Enables multiple replication initiation events
-```
+## Data Files
 
----
+| File | Purpose |
+|------|---------|
+| `syn3A.gb` | Syn3A genome (GenBank) |
+| `Central_AA_Zane_Balanced_direction_fixed_nounqATP.tsv` | ~500 metabolic reactions, kcats, Kms |
+| `Nucleotide_Kinetic_Parameters.tsv` | NTP/dNTP pathway kinetics |
+| `proteomics.xlsx` | ~480 proteins, experimental abundances |
+| `mRNA_counts.csv` | Steady-state mRNA counts |
+| `GlobalParameters_Zane-TB-DB.csv` | Media, cell radius, ion conc |
+| `lipid_NoH2O_balanced_model.tsv` | Lipid biosynthesis |
+| `transport_NoH2O_Zane-TB-DB.tsv` | Nutrient transport |
 
-## Scale of the Model
+## Output
 
-- **~800+ molecular species**:
-  - ~480 proteins
-  - ~480 mRNAs
-  - ~50+ metabolites
-  - ~20 tRNAs (charged/uncharged pairs)
-  - Ribosomal RNAs
-  - Nucleotide pools and cofactors
+- `.lm` (HDF5): Time-series of all species counts
+- `.csv`: Species counts at each timestep
+- `.log`: Debug info
+- `fluxes/*.csv`: Metabolic fluxes per minute
+- Growth metrics: Cell volume, surface area
 
-- **~1,300+ reactions**:
-  - ~500+ metabolic ODE reactions
-  - ~800+ CME reactions (transcription, translation, degradation, replication)
+## Dependencies
 
-- **Simulation time**: Full cell cycle (100-125 minutes by default)
-
----
-
-## Key Data Files
-
-| File | Size | Purpose |
-|------|------|---------|
-| `syn3A.gb` | 1.2 MB | Complete Syn3A genome in GenBank format |
-| `Central_AA_Zane_Balanced_direction_fixed_nounqATP.tsv` | 490 KB | Central metabolic reactions (~500) with kinetic parameters |
-| `Nucleotide_Kinetic_Parameters.tsv` | 488 KB | NTP/dNTP synthesis pathway parameters |
-| `proteomics.xlsx` | 160 KB | Quantitative proteomics data for ~480 proteins |
-| `mRNA_counts.csv` | 18 KB | Steady-state mRNA copy numbers |
-| `GlobalParameters_Zane-TB-DB.csv` | 2.6 KB | Media composition, cell radius, ion concentrations |
-| `lipid_NoH2O_balanced_model.tsv` | 39 KB | Lipid biosynthesis pathways |
-| `transport_NoH2O_Zane-TB-DB.tsv` | 12 KB | Nutrient transport reactions |
-
----
-
-## Simulation Output
-
-Upon running a simulation, outputs include:
-
-1. **`.lm` file** (HDF5 format): Complete time-series of all species particle counts
-2. **`.csv` file**: Comma-separated species counts at each timestep
-3. **`.log` file**: Simulation debug information
-4. **`fluxes/*.csv` files**: Metabolic reaction flux data at each minute
-5. **Growth metrics**: Cell volume and surface area progression
-
----
-
-## Technologies Used
-
-- **pyLM (Lattice Microbes)**: CME solver with GPU support for stochastic chemical kinetics
-- **odecell**: Custom ODE model builder for metabolic networks
-- **SciPy/CVODES**: ODE integration for deterministic biochemical reactions
-- **Cython**: JIT compilation for ODE solver performance optimization
-- **BioPython**: Genome parsing and sequence operations
-- **Pandas**: Data manipulation and analysis
-- **MPI4Py**: Parallel execution for multiple cell replicates
-
----
-
-## Spatial Model (RDME_gCME_ODE)
-
-The spatial variant in `RDME_gCME_ODE/`:
-- Uses **Reaction-Diffusion Master Equation (RDME)** for spatial resolution
-- Simulates only first **20 minutes** of cell cycle
-- Divides cell into voxels with diffusion between compartments
-- Requires **GPU acceleration** (CUDA 10+, tested on NVIDIA Titan V, Tesla V100)
-- Uses same biological parameters but enables spatial heterogeneity
-
----
-
-## Summary
-
-This represents one of the most comprehensive whole-cell computational models currently available, integrating stochastic gene expression (CME) with deterministic metabolism (ODE) in a hybrid framework to simulate a complete minimal cell cycle. The model captures essentially every major biological process in a living cell - from DNA replication through transcription and translation to metabolism and cell growth - making it a powerful tool for understanding cellular systems biology.
+- pyLM (Lattice Microbes): CME solver
+- odecell: ODE model builder
+- SciPy/CVODES: ODE integration
+- Cython: JIT compilation
+- BioPython, Pandas, MPI4Py
