@@ -1,0 +1,34 @@
+# Web framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+python-multipart==0.0.6
+
+# CORS and middleware
+fastapi-cors==0.0.6
+
+# Core scientific computing dependencies (from odecell)
+numpy==1.21.6
+scipy==1.7.3
+pandas==1.3.5
+
+# Biology/Systems biology
+cobra==0.26.3
+sbtab==0.9.71
+BioPython==1.79
+
+# ODE solvers
+pycvodes==0.14.1
+
+# Plotting (for generating result visualizations)
+matplotlib==3.5.3
+plotnine==0.10.1
+
+# Cython for compiled extensions
+cython==0.29.4
+
+# Data validation and serialization
+python-jose[cryptography]==3.3.0
+
+# Async support
+aiofiles==23.2.1
