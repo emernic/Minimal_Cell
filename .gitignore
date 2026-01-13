@@ -77,3 +77,7 @@ RDME_gCME_ODE/simulations/
 .env.local
 .env.*.local
 .railway/
+
+# Cython build artifacts
+odecell/pyxbld/
+
